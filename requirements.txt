@@ -1,0 +1,8 @@
+gradio==4.44.0
+torch==2.4.0
+pytorch-forecasting==1.8.0
+lightning==2.4.0
+pandas==2.2.2
+numpy==1.26.4
+matplotlib==3.9.0
+huggingface_hub==0.24.6
