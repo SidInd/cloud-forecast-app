@@ -23,6 +23,20 @@ EXAMPLE_CHOICES = [os.path.basename(p) for p in EXAMPLE_FILES]
 EXAMPLE_LOOKUP = {os.path.basename(p): p for p in EXAMPLE_FILES}
 
 
+def _load_tft_cpu_safe(ckpt_path):
+    raw = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    hparams = dict(raw["hyper_parameters"])
+
+    loss_obj = hparams.get("loss")
+    if loss_obj is not None and hasattr(loss_obj, "_device"):
+        loss_obj._device = torch.device("cpu")
+
+    model = TemporalFusionTransformer(**hparams)
+    model.load_state_dict(raw["state_dict"])
+    model.eval()
+    return model
+
+
 @st.cache_resource(show_spinner="Loading models (first load can take a minute)...")
 def load_everything():
     config_path = hf_hub_download(HF_MODEL_REPO, "model_config.json")
@@ -51,8 +65,7 @@ def load_everything():
     lstm_model.eval()
 
     tft_path = hf_hub_download(HF_MODEL_REPO, "tft_model.ckpt")
-    tft_model = TemporalFusionTransformer.load_from_checkpoint(tft_path, map_location="cpu")
-    tft_model.eval()
+    tft_model = _load_tft_cpu_safe(tft_path)
 
     tft_training_path = hf_hub_download(HF_MODEL_REPO, "tft_training_dataset.pkl")
     tft_training = TimeSeriesDataSet.load(tft_training_path)
