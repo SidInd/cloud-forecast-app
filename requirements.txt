@@ -1,8 +1,8 @@
 streamlit==1.38.0
-torch==2.4.0
+torch>=2.9
 pytorch-forecasting==1.8.0
-lightning==2.4.0
-pandas==2.2.2
-numpy==1.26.4
-matplotlib==3.9.0
-huggingface_hub==0.24.6
+lightning>=2.4.0
+pandas>=2.2
+numpy>=1.26
+matplotlib>=3.9
+huggingface_hub>=0.24

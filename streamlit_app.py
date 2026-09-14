@@ -2,6 +2,8 @@ import glob
 import json
 import os
 
+os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+
 import numpy as np
 import pandas as pd
 import torch
@@ -15,7 +17,6 @@ from preprocessing import prepare_csv
 
 HF_MODEL_REPO = "SidArr/cloud-forecast-models"
 
-# ---- Bundled example CSVs shipped in this repo (examples/*.csv) ----
 EXAMPLES_DIR = os.path.join(os.path.dirname(__file__), "examples")
 EXAMPLE_FILES = sorted(glob.glob(os.path.join(EXAMPLES_DIR, "*.csv")))
 EXAMPLE_CHOICES = [os.path.basename(p) for p in EXAMPLE_FILES]
