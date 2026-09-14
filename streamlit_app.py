@@ -17,6 +17,7 @@ from preprocessing import prepare_csv
 
 HF_MODEL_REPO = "SidArr/cloud-forecast-models"
 
+
 EXAMPLES_DIR = os.path.join(os.path.dirname(__file__), "examples")
 EXAMPLE_FILES = sorted(glob.glob(os.path.join(EXAMPLES_DIR, "*.csv")))
 EXAMPLE_CHOICES = [os.path.basename(p) for p in EXAMPLE_FILES]
@@ -27,12 +28,16 @@ def _load_tft_cpu_safe(ckpt_path):
     raw = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     hparams = dict(raw["hyper_parameters"])
 
-    loss_obj = hparams.get("loss")
-    if loss_obj is not None and hasattr(loss_obj, "_device"):
-        loss_obj._device = torch.device("cpu")
-
     model = TemporalFusionTransformer(**hparams)
     model.load_state_dict(raw["state_dict"])
+
+    for module in model.modules():
+        if hasattr(module, "_device"):
+            try:
+                module._device = torch.device("cpu")
+            except AttributeError:
+                module.__dict__["_device"] = torch.device("cpu")
+
     model.eval()
     return model
 
