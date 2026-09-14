@@ -13,8 +13,8 @@ from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
 
 from preprocessing import prepare_csv
 
-# ---- Point this at YOUR Hugging Face Hub model repo (Section 8.2 of the guide) ----
-HF_MODEL_REPO = "your-username/cloud-forecast-models"
+
+HF_MODEL_REPO = "SidArr/cloud-forecast-models"
 
 # ---- Bundled example CSVs shipped in this repo (examples/*.csv) ----
 EXAMPLES_DIR = os.path.join(os.path.dirname(__file__), "examples")
@@ -34,10 +34,6 @@ HORIZONS = CFG["HORIZONS"]
 LOOKBACK = CFG["LOOKBACK"]
 VALUE_COLS = CFG["VALUE_COLS"]
 MAX_PREDICTION_LENGTH = CFG["MAX_PREDICTION_LENGTH"]
-# REFERENCE_VM_ID: a real vm_id from the training set. TFT's GroupNormalizer
-# only has fitted scale statistics for vm_ids it saw during training, so a
-# new series (uploaded or a bundled example) is mapped onto this one purely
-# so the normalizer has something to look up. See the guide's "TFT gotcha".
 REFERENCE_VM_ID = CFG["REFERENCE_VM_ID"]
 
 UNKNOWN_REALS = VALUE_COLS + [
@@ -94,9 +90,6 @@ def run_lstm(feat_df):
 
 
 def _future_covariate_rows(feat_df, n_steps):
-    """Build the decoder-side rows TFT needs: known covariates for the future
-    timestamps, with unknown-real columns placeholder-filled (they're only
-    used by the encoder, never fed to the decoder by a TFT)."""
     last_ts = feat_df["timestamp"].iloc[-1]
     last_time_idx = int(feat_df["time_idx"].iloc[-1])
     future_ts = pd.date_range(last_ts + pd.Timedelta(hours=1), periods=n_steps, freq="h")
@@ -118,9 +111,8 @@ def _future_covariate_rows(feat_df, n_steps):
 
 def run_tft(feat_df):
     df = feat_df[["timestamp", "time_idx", "vm_type"] + KNOWN_REALS + UNKNOWN_REALS].copy()
-    df["vm_id"] = REFERENCE_VM_ID  # map onto a vm_id the fitted normalizer knows
+    df["vm_id"] = REFERENCE_VM_ID
     df = df.iloc[-LOOKBACK:].reset_index(drop=True)
-    # re-base time_idx to whatever the reference series' own indexing needs
     df["time_idx"] = np.arange(len(df))
 
     future = _future_covariate_rows(df, MAX_PREDICTION_LENGTH)
@@ -142,8 +134,6 @@ def run_tft(feat_df):
 
 
 def _resolve_source(file, example_name):
-    """Decide which CSV to read: an upload always wins over the sample picker,
-    so users can freely try a sample and then switch to their own data."""
     if file is not None:
         return file.name, f"your upload ({os.path.basename(file.name)})"
     if example_name and example_name in EXAMPLE_LOOKUP:
@@ -243,15 +233,13 @@ with gr.Blocks(title="Cloud VM CPU Forecasting") as demo:
         inputs=[file_input, example_dd, model_radio, horizon_radio],
         outputs=[plot_out, text_out],
     )
-    # Also re-run whenever the sample picker changes, so switching samples
-    # feels immediate even without pressing the button.
+
     example_dd.change(
         fn=predict,
         inputs=[file_input, example_dd, model_radio, horizon_radio],
         outputs=[plot_out, text_out],
     )
-    # Show a sample forecast the instant the page loads -- this is what makes
-    # the demo useful before anyone uploads a thing.
+
     demo.load(
         fn=lambda: predict(None, DEFAULT_EXAMPLE, "All", str(HORIZONS[-1])),
         inputs=None,

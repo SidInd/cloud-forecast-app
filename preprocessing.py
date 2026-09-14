@@ -1,10 +1,5 @@
-"""
-Shared feature pipeline for the Cloud Forecasting app.
-Copied verbatim from the training notebook (resample_hourly, build_features)
-plus a prepare_uploaded_csv() wrapper that normalizes any raw CSV -- whether
-it came from a user upload or one of the bundled example files -- into the
-schema build_features() expects.
-"""
+#Shared feature pipeline for the Cloud Forecasting app.
+
 import numpy as np
 import pandas as pd
 
@@ -47,15 +42,12 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def prepare_csv(raw_df: pd.DataFrame, value_cols) -> pd.DataFrame:
-    """Normalize any raw CSV (user upload OR a bundled example file) into the
-    schema build_features() expects. Missing optional columns are filled with
-    the same fallback values used at training time."""
     df = raw_df.copy()
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     if "vm_id" not in df.columns:
         df["vm_id"] = "uploaded-series"
     if "vm_type" not in df.columns:
-        df["vm_type"] = "unknown"  # matches the fallback used at training time
+        df["vm_type"] = "unknown"
     if "region" not in df.columns:
         df["region"] = "user-upload"
     if "cloud_provider" not in df.columns:
@@ -64,6 +56,4 @@ def prepare_csv(raw_df: pd.DataFrame, value_cols) -> pd.DataFrame:
     hourly = resample_hourly(df, value_cols)
     return build_features(hourly)
 
-
-# Kept as an alias so any older code that imports prepare_uploaded_csv still works.
 prepare_uploaded_csv = prepare_csv
