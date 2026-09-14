@@ -6,13 +6,12 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import gradio as gr
+import streamlit as st
 import matplotlib.pyplot as plt
 from huggingface_hub import hf_hub_download
 from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
 
 from preprocessing import prepare_csv
-
 
 HF_MODEL_REPO = "SidArr/cloud-forecast-models"
 
@@ -21,12 +20,46 @@ EXAMPLES_DIR = os.path.join(os.path.dirname(__file__), "examples")
 EXAMPLE_FILES = sorted(glob.glob(os.path.join(EXAMPLES_DIR, "*.csv")))
 EXAMPLE_CHOICES = [os.path.basename(p) for p in EXAMPLE_FILES]
 EXAMPLE_LOOKUP = {os.path.basename(p): p for p in EXAMPLE_FILES}
-DEFAULT_EXAMPLE = EXAMPLE_CHOICES[0] if EXAMPLE_CHOICES else None
 
-# ---- Load config once at startup ----
-config_path = hf_hub_download(HF_MODEL_REPO, "model_config.json")
-with open(config_path) as f:
-    CFG = json.load(f)
+
+@st.cache_resource(show_spinner="Loading models (first load can take a minute)...")
+def load_everything():
+    config_path = hf_hub_download(HF_MODEL_REPO, "model_config.json")
+    with open(config_path) as f:
+        cfg = json.load(f)
+
+    class MultiHorizonLSTM(nn.Module):
+        def __init__(self, n_features, hidden=128, n_layers=2, n_horizons=3, dropout=0.2):
+            super().__init__()
+            self.lstm = nn.LSTM(
+                input_size=n_features, hidden_size=hidden, num_layers=n_layers,
+                batch_first=True, dropout=dropout if n_layers > 1 else 0.0,
+            )
+            self.head = nn.Sequential(
+                nn.Linear(hidden, hidden // 2), nn.ReLU(), nn.Dropout(dropout),
+                nn.Linear(hidden // 2, n_horizons),
+            )
+
+        def forward(self, x):
+            out, _ = self.lstm(x)
+            return self.head(out[:, -1, :])
+
+    lstm_path = hf_hub_download(HF_MODEL_REPO, "lstm_model.pt")
+    lstm_model = MultiHorizonLSTM(n_features=len(cfg["FEATURE_COLS"]), n_horizons=len(cfg["HORIZONS"]))
+    lstm_model.load_state_dict(torch.load(lstm_path, map_location="cpu"))
+    lstm_model.eval()
+
+    tft_path = hf_hub_download(HF_MODEL_REPO, "tft_model.ckpt")
+    tft_model = TemporalFusionTransformer.load_from_checkpoint(tft_path, map_location="cpu")
+    tft_model.eval()
+
+    tft_training_path = hf_hub_download(HF_MODEL_REPO, "tft_training_dataset.pkl")
+    tft_training = TimeSeriesDataSet.load(tft_training_path)
+
+    return cfg, lstm_model, tft_model, tft_training
+
+
+CFG, lstm_model, tft_model, tft_training = load_everything()
 
 FEATURE_COLS = CFG["FEATURE_COLS"]
 TARGET_COL = CFG["TARGET_COL"]
@@ -42,41 +75,6 @@ UNKNOWN_REALS = VALUE_COLS + [
 KNOWN_REALS = ["hour_sin", "hour_cos", "dow_sin", "dow_cos", "is_weekend"]
 
 
-# ---- Model class (copied verbatim from the training notebook) ----
-class MultiHorizonLSTM(nn.Module):
-    def __init__(self, n_features=len(FEATURE_COLS), hidden=128, n_layers=2,
-                 n_horizons=len(HORIZONS), dropout=0.2):
-        super().__init__()
-        self.lstm = nn.LSTM(
-            input_size=n_features, hidden_size=hidden, num_layers=n_layers,
-            batch_first=True, dropout=dropout if n_layers > 1 else 0.0,
-        )
-        self.head = nn.Sequential(
-            nn.Linear(hidden, hidden // 2), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden // 2, n_horizons),
-        )
-
-    def forward(self, x):
-        out, _ = self.lstm(x)
-        return self.head(out[:, -1, :])
-
-
-# ---- Load LSTM ----
-lstm_path = hf_hub_download(HF_MODEL_REPO, "lstm_model.pt")
-lstm_model = MultiHorizonLSTM()
-lstm_model.load_state_dict(torch.load(lstm_path, map_location="cpu"))
-lstm_model.eval()
-
-# ---- Load TFT + the training TimeSeriesDataSet it needs for inference ----
-tft_path = hf_hub_download(HF_MODEL_REPO, "tft_model.ckpt")
-tft_model = TemporalFusionTransformer.load_from_checkpoint(tft_path, map_location="cpu")
-tft_model.eval()
-
-tft_training_path = hf_hub_download(HF_MODEL_REPO, "tft_training_dataset.pkl")
-tft_training = TimeSeriesDataSet.load(tft_training_path)
-
-
-# ---- Forecasters ----
 def naive_forecast(series, horizons):
     last = float(series[-1])
     return {h: last for h in horizons}
@@ -124,7 +122,7 @@ def run_tft(feat_df):
     pred_loader = pred_dataset.to_dataloader(train=False, batch_size=1, num_workers=0)
 
     with torch.no_grad():
-        raw = tft_model.predict(pred_loader, mode="quantiles")  # [1, horizon, n_quantiles]
+        raw = tft_model.predict(pred_loader, mode="quantiles")
 
     p10, p50, p90 = raw[0, :, 0].numpy(), raw[0, :, 1].numpy(), raw[0, :, 2].numpy()
     return {
@@ -133,33 +131,18 @@ def run_tft(feat_df):
     }
 
 
-def _resolve_source(file, example_name):
-    if file is not None:
-        return file.name, f"your upload ({os.path.basename(file.name)})"
-    if example_name and example_name in EXAMPLE_LOOKUP:
-        return EXAMPLE_LOOKUP[example_name], f"sample series ({example_name})"
-    return None, None
-
-
-def predict(file, example_name, model_choice, horizon):
-    horizon = int(horizon)
-    source_path, source_label = _resolve_source(file, example_name)
-
-    if source_path is None:
-        return None, "Upload a CSV or pick a sample series from the dropdown first."
-
-    raw_df = pd.read_csv(source_path)
+def predict(raw_df, model_choice, horizon, source_label):
     feat_df = prepare_csv(raw_df, VALUE_COLS)
 
     if len(feat_df) < LOOKBACK:
-        return None, (
+        st.error(
             f"Need at least {LOOKBACK} hours of history after feature engineering; "
-            f"got {len(feat_df)}. Try a longer CSV or one of the bundled samples."
+            f"got {len(feat_df)}. Try a longer CSV or a bundled sample."
         )
+        return
 
     series = feat_df[TARGET_COL].values
     results = {}
-
     if model_choice in ("Naive", "All"):
         results["Naive"] = {"pred": naive_forecast(series, HORIZONS)[horizon]}
     if model_choice in ("LSTM", "All"):
@@ -183,68 +166,51 @@ def predict(file, example_name, model_choice, horizon):
     ax.set_ylabel("CPU %")
     ax.set_title(f"{horizon}h-ahead forecast — {source_label}")
     plt.tight_layout()
+    st.pyplot(fig)
 
-    lines = [f"Source: {source_label}"]
+    lines = [f"**Source:** {source_label}"]
     for name, r in results.items():
         if "lower" in r:
-            lines.append(f"{name}: {r['pred']:.2f}%  (P10-P90: {r['lower']:.2f}-{r['upper']:.2f}%)")
+            lines.append(f"- **{name}:** {r['pred']:.2f}%  (P10-P90: {r['lower']:.2f}-{r['upper']:.2f}%)")
         else:
-            lines.append(f"{name}: {r['pred']:.2f}%")
-    summary = "\n".join(lines)
-
-    return fig, summary
+            lines.append(f"- **{name}:** {r['pred']:.2f}%")
+    st.markdown("\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
-# UI — Blocks (not a plain Interface) so we can auto-run a sample on page
-# load and let a bundled example coexist with a real file upload.
+# UI
 # ---------------------------------------------------------------------------
-with gr.Blocks(title="Cloud VM CPU Forecasting") as demo:
-    gr.Markdown(
-        "# Cloud VM CPU Forecasting\n"
-        "Compare **Naive**, **LSTM**, and **TFT** forecasts for CPU utilization. "
-        "A sample forecast is shown below automatically — no upload needed. "
-        "Pick a different bundled sample, or upload your own CSV "
-        f"(`timestamp`, `cpu_util`[, `vm_id`], needs at least {LOOKBACK} hourly rows) to override it. "
-        "First load after inactivity can take 30-60s while the Space wakes up."
+st.set_page_config(page_title="Cloud VM CPU Forecasting", layout="wide")
+st.title("Cloud VM CPU Forecasting")
+st.write(
+    "Compare **Naive**, **LSTM**, and **TFT** forecasts for CPU utilization. "
+    "Pick a bundled sample or upload your own CSV "
+    f"(`timestamp`, `cpu_util`[, `vm_id`], needs at least {LOOKBACK} hourly rows). "
+    "First load after inactivity can take 30-60s while the app wakes up."
+)
+
+col1, col2 = st.columns([1, 2])
+
+with col1:
+    uploaded = st.file_uploader("Upload your own CSV (optional)", type="csv")
+    example_name = st.selectbox(
+        "...or pick a bundled sample series",
+        EXAMPLE_CHOICES if EXAMPLE_CHOICES else ["(no samples bundled yet)"],
     )
-
-    with gr.Row():
-        with gr.Column(scale=1):
-            file_input = gr.File(label="Upload your own CSV (optional)")
-            example_dd = gr.Dropdown(
-                EXAMPLE_CHOICES, value=DEFAULT_EXAMPLE,
-                label="...or pick a bundled sample series",
-            )
-            model_radio = gr.Radio(
-                ["Naive", "LSTM", "TFT", "All"], value="All", label="Model"
-            )
-            horizon_radio = gr.Radio(
-                [str(h) for h in HORIZONS], value=str(HORIZONS[-1]),
-                label="Forecast horizon (hours)",
-            )
-            run_btn = gr.Button("Run forecast", variant="primary")
-        with gr.Column(scale=2):
-            plot_out = gr.Plot(label="Forecast")
-            text_out = gr.Textbox(label="Predicted values", lines=5)
-
-    run_btn.click(
-        fn=predict,
-        inputs=[file_input, example_dd, model_radio, horizon_radio],
-        outputs=[plot_out, text_out],
+    model_choice = st.radio("Model", ["Naive", "LSTM", "TFT", "All"], index=3, horizontal=True)
+    horizon = st.radio(
+        "Forecast horizon (hours)", HORIZONS, index=len(HORIZONS) - 1, horizontal=True,
     )
+    run = st.button("Run forecast", type="primary")
 
-    example_dd.change(
-        fn=predict,
-        inputs=[file_input, example_dd, model_radio, horizon_radio],
-        outputs=[plot_out, text_out],
-    )
-
-    demo.load(
-        fn=lambda: predict(None, DEFAULT_EXAMPLE, "All", str(HORIZONS[-1])),
-        inputs=None,
-        outputs=[plot_out, text_out],
-    )
-
-if __name__ == "__main__":
-    demo.launch()
+with col2:
+    if uploaded is not None:
+        raw_df = pd.read_csv(uploaded)
+        source_label = f"your upload ({uploaded.name})"
+        predict(raw_df, model_choice, horizon, source_label)
+    elif example_name in EXAMPLE_LOOKUP:
+        raw_df = pd.read_csv(EXAMPLE_LOOKUP[example_name])
+        source_label = f"sample series ({example_name})"
+        predict(raw_df, model_choice, horizon, source_label)
+    else:
+        st.info("Upload a CSV or add sample CSVs to the examples/ folder to see a forecast here.")

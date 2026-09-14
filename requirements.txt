@@ -1,4 +1,4 @@
-gradio==4.44.0
+streamlit==1.38.0
 torch==2.4.0
 pytorch-forecasting==1.8.0
 lightning==2.4.0
