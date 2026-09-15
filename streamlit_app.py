@@ -3,6 +3,7 @@ import json
 import os
 
 os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
 import numpy as np
 import pandas as pd

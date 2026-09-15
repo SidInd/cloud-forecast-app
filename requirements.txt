@@ -1,9 +1,10 @@
-streamlit>=1.39
-pillow>=11.0
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.9
+pillow>=11.0
 pytorch-forecasting==1.8.0
 lightning>=2.4.0
 pandas>=2.2
 numpy>=1.26
 matplotlib>=3.9
 huggingface_hub>=0.24
+streamlit>=1.39
