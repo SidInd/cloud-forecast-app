@@ -14,6 +14,7 @@ from huggingface_hub import hf_hub_download
 from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
 from lightning.pytorch.strategies.strategy import Strategy
 
+
 _orig_strategy_teardown = Strategy.teardown
 def _safe_strategy_teardown(self):
     if self.lightning_module is not None:
@@ -153,7 +154,16 @@ def run_tft(feat_df):
     pred_loader = pred_dataset.to_dataloader(train=False, batch_size=1, num_workers=0)
 
     with torch.no_grad():
-        raw = tft_model.predict(pred_loader, mode="quantiles")
+        raw = tft_model.predict(
+            pred_loader,
+            mode="quantiles",
+            trainer_kwargs=dict(
+                accelerator="cpu",
+                logger=False,
+                enable_progress_bar=False,
+                enable_checkpointing=False,
+            ),
+        )
 
     p10, p50, p90 = raw[0, :, 0].numpy(), raw[0, :, 1].numpy(), raw[0, :, 2].numpy()
     return {
