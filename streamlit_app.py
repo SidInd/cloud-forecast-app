@@ -12,11 +12,23 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from huggingface_hub import hf_hub_download
 from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
+from lightning.pytorch.strategies.strategy import Strategy
+
+_orig_strategy_teardown = Strategy.teardown
+def _safe_strategy_teardown(self):
+    if self.lightning_module is not None:
+        try:
+            self.lightning_module.cpu()
+        except RuntimeError:
+            pass
+    self.precision_plugin.teardown()
+    if self.accelerator is not None:
+        self.accelerator.teardown()
+Strategy.teardown = _safe_strategy_teardown
 
 from preprocessing import prepare_csv
 
 HF_MODEL_REPO = "SidArr/cloud-forecast-models"
-
 
 EXAMPLES_DIR = os.path.join(os.path.dirname(__file__), "examples")
 EXAMPLE_FILES = sorted(glob.glob(os.path.join(EXAMPLES_DIR, "*.csv")))
